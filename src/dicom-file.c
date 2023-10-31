@@ -319,8 +319,8 @@ static bool get_frame_size(DcmError **error,
         return false;
     }
 
-    *frame_width = width;
-    *frame_height = height;
+    *frame_width = (uint32_t) width;
+    *frame_height = (uint32_t) height;
 
     return true;
 }
@@ -350,8 +350,8 @@ static bool get_tiles(DcmError **error,
     height = frame_width;
     (void) get_tag_int(NULL, metadata, "TotalPixelMatrixRows", &height);
 
-    *tiles_across = width / frame_width + !!(width % frame_width);
-    *tiles_down = height / frame_height + !!(height % frame_height);
+    *tiles_across = (uint32_t) width / frame_width + !!(width % frame_width);
+    *tiles_down = (uint32_t) height / frame_height + !!(height % frame_height);
 
     return true;
 }
@@ -536,7 +536,7 @@ static DcmDataSet *dcm_filehandle_read_file_meta(DcmError **error,
                          false,
                          &parse,
                          filehandle)) {
-        return false;
+        return NULL;
     }
 
     /* Sanity check. We should have parsed a single dataset into the sequence
@@ -555,8 +555,8 @@ static DcmDataSet *dcm_filehandle_read_file_meta(DcmError **error,
     }
 
     DcmDataSet *file_meta = dcm_sequence_get(error, sequence, 0);
-    if (file_meta == NULL ) {
-        return false;
+    if (file_meta == NULL) {
+        return NULL;
     }
 
     // steal file_meta to stop it being destroyed
@@ -664,49 +664,49 @@ static bool set_pixel_description(DcmError **error,
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->rows = value;
+    desc->rows = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280011);
     if (element == NULL ||
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->columns = value;
+    desc->columns = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280002);
     if (element == NULL ||
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->samples_per_pixel = value;
+    desc->samples_per_pixel = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280100);
     if (element == NULL ||
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->bits_allocated = value;
+    desc->bits_allocated = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280101);
     if (element == NULL ||
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->bits_stored = value;
+    desc->bits_stored = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280103);
     if (element == NULL ||
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->pixel_representation = value;
+    desc->pixel_representation = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280006);
     if (element == NULL ||
         !dcm_element_get_value_integer(error, element, 0, &value)) {
         return false;
     }
-    desc->planar_configuration = value;
+    desc->planar_configuration = (uint16_t) value;
 
     element = dcm_dataset_get(error, metadata, 0x00280004);
     if (element == NULL ||
@@ -765,7 +765,7 @@ DcmDataSet *dcm_filehandle_read_metadata(DcmError **error,
                            filehandle->implicit,
                            &parse,
                            filehandle)) {
-        return false;
+        return NULL;
     }
 
     /* Sanity check. We should have parsed a single dataset into the sequence
@@ -784,8 +784,8 @@ DcmDataSet *dcm_filehandle_read_metadata(DcmError **error,
     }
 
     DcmDataSet *meta = dcm_sequence_get(error, sequence, 0);
-    if (meta == NULL ) {
-        return false;
+    if (meta == NULL) {
+        return NULL;
     }
 
     // steal meta to stop it being destroyed
@@ -821,6 +821,9 @@ const DcmDataSet *dcm_filehandle_get_metadata_subset(DcmError **error,
         DcmDataSet *meta = dcm_filehandle_read_metadata(error,
                                                         filehandle,
                                                         stop_tags);
+        if (meta == NULL) {
+            return NULL;
+        }
 
         // record the position of the tag that stopped the read
         if (!dcm_offset(error, filehandle, &filehandle->after_read_metadata)) {
@@ -838,7 +841,7 @@ const DcmDataSet *dcm_filehandle_get_metadata_subset(DcmError **error,
                 &filehandle->tiles_across, &filehandle->tiles_down) ||
             !set_pixel_description(error, meta, &filehandle->desc)) {
             dcm_dataset_destroy(meta);
-            return false;
+            return NULL;
         }
         filehandle->num_tiles = filehandle->tiles_across *
             filehandle->tiles_down;
