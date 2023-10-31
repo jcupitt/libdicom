@@ -41,7 +41,6 @@ typedef struct _DcmParseState {
     DcmDataSet *meta;
     int64_t offset;
     int64_t pixel_data_offset;
-    uint64_t *extended_offset_table;
 } DcmParseState;
 
 
@@ -155,7 +154,7 @@ static bool is_big_endian(void)
 static void byteswap(char *data, size_t length, size_t size)
 {
     // only swap if the data is "swappable"
-    if (length >= size && length % size == 0) {
+    if (size > 0 && length >= size && length % size == 0) {
         size_t n_elements = length / size;
 
         switch (size) {
@@ -600,14 +599,14 @@ static bool parse_element_body(DcmParseState *state,
 
             // read to a static char buffer, if possible
             if ((int64_t) length + 1 >= INPUT_BUFFER_SIZE) {
-                value = value_free = DCM_MALLOC(state->error, (size_t) length + 1);
+                value = value_free = DCM_MALLOC(state->error,
+                                                (size_t) length + 1);
                 if (value == NULL) {
                     return false;
                 }
             } else {
                 value = input_buffer;
             }
-
 
             if (!dcm_require(state, value, length, position)) {
                 if (value_free != NULL) {
@@ -625,11 +624,8 @@ static bool parse_element_body(DcmParseState *state,
                 }
             }
 
-            if (vr_class == DCM_VR_CLASS_NUMERIC_DECIMAL ||
-                vr_class == DCM_VR_CLASS_NUMERIC_INTEGER) {
-                if (state->big_endian) {
-                    byteswap(value, length, size);
-                }
+            if (size > 0 && state->big_endian) {
+                byteswap(value, length, size);
             }
 
             if (state->parse->element_create &&
@@ -885,6 +881,8 @@ bool dcm_parse_pixeldata_offsets(DcmError **error,
 
     int64_t position = 0;
 
+    dcm_log_debug("Parsing PixelData.");
+
     uint32_t tag;
     DcmVR vr;
     uint32_t length;
@@ -916,7 +914,7 @@ bool dcm_parse_pixeldata_offsets(DcmError **error,
 
     if (length > 0) {
         // There is a non-zero length BOT, use that
-        dcm_log_info("Read Basic Offset Table value.");
+        dcm_log_info("Reading Basic Offset Table.");
 
         // Read offset values from BOT Item value
         // FIXME .. could do this with a single require to a uint32_t array,
@@ -955,6 +953,8 @@ bool dcm_parse_pixeldata_offsets(DcmError **error,
 
         // we could use our generic parser above ^^ but we have a special loop
         // here as an optimisation (we can skip over the pixel data itself)
+
+        dcm_log_info("Building offset table from pixel data scan.");
 
         // 0 in the BOT is the offset to the start of frame 1, ie. here
         *first_frame_offset = position;

@@ -1,0 +1,18 @@
+version: 2
+
+build:
+  os: "ubuntu-22.04"
+  apt_packages:
+    - clang
+    - libclang-dev
+  tools:
+    python: "3.11"
+
+python:
+  install:
+    - requirements: doc/requirements-rtd.txt
+
+sphinx:
+  configuration: doc/source/conf.py
+
+formats: all

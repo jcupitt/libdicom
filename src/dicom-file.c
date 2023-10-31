@@ -83,6 +83,12 @@ struct _DcmFilehandle {
     // push and pop these while we parse
     UT_array *dataset_stack;
     UT_array *sequence_stack;
+
+    // skip to tags during parse
+    uint32_t *skip_to_tags;
+
+    // set if we see an ext offset table
+    bool have_extended_offset_table;
 };
 
 
@@ -1003,6 +1009,8 @@ static bool read_frame_index(DcmError **error,
         .stop = parse_frame_index_stop,
     };
 
+    dcm_log_debug("Reading per frame functional group sequence.");
+
     filehandle->frame_index = DCM_NEW_ARRAY(error,
                                             filehandle->num_tiles,
                                             uint32_t);
@@ -1029,10 +1037,10 @@ static bool read_frame_index(DcmError **error,
 }
 
 
-static bool parse_skip_to_index(void *client,
-                                uint32_t tag,
-                                DcmVR vr,
-                                uint32_t length)
+static bool parse_skip_to(void *client,
+                          uint32_t tag,
+                          DcmVR vr,
+                          uint32_t length)
 {
     DcmFilehandle *filehandle = (DcmFilehandle *) client;
 
@@ -1041,19 +1049,86 @@ static bool parse_skip_to_index(void *client,
 
     filehandle->last_tag = tag;
 
-    return tag == TAG_PER_FRAME_FUNCTIONAL_GROUP_SEQUENCE ||
-           tag == TAG_PIXEL_DATA ||
-           tag == TAG_FLOAT_PIXEL_DATA ||
-           tag == TAG_DOUBLE_PIXEL_DATA;
+    for (int i = 0; filehandle->skip_to_tags[i]; i++)
+        if (tag == filehandle->skip_to_tags[i])
+            return true;
+
+    return false;
+
 }
 
 
-static bool read_skip_to_index(DcmError **error,
-                             DcmFilehandle *filehandle)
+static bool read_skip_to(DcmError **error,
+                         DcmFilehandle *filehandle,
+                         uint32_t *skip_to_tags)
 
 {
     static DcmParse parse = {
-        .stop = parse_skip_to_index,
+        .stop = parse_skip_to,
+    };
+
+    filehandle->skip_to_tags = skip_to_tags;
+    if (!dcm_parse_dataset(error,
+                           filehandle->io,
+                           filehandle->implicit,
+                           &parse,
+                           filehandle)) {
+        return false;
+    }
+
+    return true;
+}
+
+
+static bool parse_extended_offsets_element_create(DcmError **error,
+                                                  void *client,
+                                                  uint32_t tag,
+                                                  DcmVR vr,
+                                                  char *value,
+                                                  uint32_t length)
+{
+    USED(error);
+    USED(vr);
+
+    DcmFilehandle *filehandle = (DcmFilehandle *) client;
+    int64_t expected_size = filehandle->num_frames * sizeof(int64_t);
+
+    if (tag == TAG_EXTENDED_OFFSET_TABLE && length == expected_size) {
+        memcpy(filehandle->offset_table, value, length);
+        filehandle->have_extended_offset_table = true;
+
+        // the size of the pixeldata header, plus the size of the empty frame
+        // 0 (the BOT)
+        filehandle->first_frame_offset = 20;
+    }
+
+    return true;
+}
+
+
+static bool parse_extended_offsets_stop(void *client,
+                                        uint32_t tag,
+                                        DcmVR vr,
+                                        uint32_t length)
+{
+    DcmFilehandle *filehandle = (DcmFilehandle *) client;
+
+    USED(vr);
+    USED(length);
+
+    filehandle->last_tag = tag;
+
+    return tag != TAG_EXTENDED_OFFSET_TABLE;
+}
+
+
+static bool
+read_extended_offsets(DcmError **error,
+                      DcmFilehandle *filehandle)
+{
+    static DcmParse parse = {
+        .element_create = parse_extended_offsets_element_create,
+        .stop = parse_extended_offsets_stop,
     };
 
     if (!dcm_parse_dataset(error,
@@ -1077,6 +1152,13 @@ bool dcm_filehandle_prepare_read_frame(DcmError **error,
             return false;
         }
 
+        filehandle->offset_table = DCM_NEW_ARRAY(error,
+                                                 filehandle->num_frames,
+                                                 int64_t);
+        if (filehandle->offset_table == NULL) {
+            return false;
+        }
+
         if (filehandle->layout == DCM_LAYOUT_UNKNOWN) {
             dcm_error_set(error, DCM_ERROR_CODE_PARSE,
                           "Reading PixelData failed",
@@ -1084,19 +1166,49 @@ bool dcm_filehandle_prepare_read_frame(DcmError **error,
             return false;
         }
 
-        // we may have previously stopped for many reasons ... skip ahead to per
-        // frame functional group, or pixel data
-        if (!read_skip_to_index(error, filehandle)) {
+        // skip ahead to per frame functional group, if present, and read it
+        uint32_t skip_to_per_frame[] = {
+            TAG_PER_FRAME_FUNCTIONAL_GROUP_SEQUENCE,
+            TAG_EXTENDED_OFFSET_TABLE,
+            TAG_PIXEL_DATA,
+            TAG_FLOAT_PIXEL_DATA,
+            TAG_DOUBLE_PIXEL_DATA,
+            0
+        };
+        if (!read_skip_to(error, filehandle, skip_to_per_frame)) {
             return false;
         }
-
-        // if we're on per frame func, read that in
         if (filehandle->last_tag == TAG_PER_FRAME_FUNCTIONAL_GROUP_SEQUENCE &&
             !read_frame_index(error, filehandle)) {
             return false;
         }
 
-        // and we must now be on pixel data
+        // skip ahead to extended offset table, if present
+        uint32_t skip_to_offset[] = {
+            TAG_EXTENDED_OFFSET_TABLE,
+            TAG_PIXEL_DATA,
+            TAG_FLOAT_PIXEL_DATA,
+            TAG_DOUBLE_PIXEL_DATA,
+            0
+        };
+        if (!read_skip_to(error, filehandle, skip_to_offset)) {
+            return false;
+        }
+        if (filehandle->last_tag == TAG_EXTENDED_OFFSET_TABLE &&
+            !read_extended_offsets(error, filehandle)) {
+            return false;
+        }
+
+        // skip to pixel data
+        uint32_t skip_to_pixel_data[] = {
+            TAG_PIXEL_DATA,
+            TAG_FLOAT_PIXEL_DATA,
+            TAG_DOUBLE_PIXEL_DATA,
+            0
+        };
+        if (!read_skip_to(error, filehandle, skip_to_pixel_data)) {
+            return false;
+        }
         if (filehandle->last_tag != TAG_PIXEL_DATA &&
             filehandle->last_tag != TAG_FLOAT_PIXEL_DATA &&
             filehandle->last_tag != TAG_DOUBLE_PIXEL_DATA) {
@@ -1110,37 +1222,32 @@ bool dcm_filehandle_prepare_read_frame(DcmError **error,
             return false;
         }
 
-        // read the BOT, or build it
-        dcm_log_debug("Reading PixelData.");
-        filehandle->offset_table = DCM_NEW_ARRAY(error,
-                                                 filehandle->num_frames,
-                                                 int64_t);
-        if (filehandle->offset_table == NULL) {
-            return false;
-        }
+        // if there was no ext offset table, we must read the basic one, or
+        // create it
+        if (!filehandle->have_extended_offset_table) {
+            const char *syntax =
+                dcm_filehandle_get_transfer_syntax_uid(filehandle);
+            if (dcm_is_encapsulated_transfer_syntax(syntax)) {
+                // read the bot if available, otherwise parse pixeldata to find
+                // offsets
+                if (!dcm_parse_pixeldata_offsets(error,
+                                                 filehandle->io,
+                                                 filehandle->implicit,
+                                                 &filehandle->first_frame_offset,
+                                                 filehandle->offset_table,
+                                                 filehandle->num_frames)) {
+                    return false;
+                }
+            } else {
+                for (uint32_t i = 0; i < filehandle->num_frames; i++) {
+                    filehandle->offset_table[i] = i *
+                                                  filehandle->desc.rows *
+                                                  filehandle->desc.columns *
+                                                  filehandle->desc.samples_per_pixel;
+                }
 
-        const char *syntax = dcm_filehandle_get_transfer_syntax_uid(filehandle);
-        if (dcm_is_encapsulated_transfer_syntax(syntax)) {
-            // read the bot if available, otherwise parse pixeldata to find
-            // offsets
-            if (!dcm_parse_pixeldata_offsets(error,
-                                             filehandle->io,
-                                             filehandle->implicit,
-                                             &filehandle->first_frame_offset,
-                                             filehandle->offset_table,
-                                             filehandle->num_frames)) {
-                return false;
+                filehandle->first_frame_offset = 12;
             }
-        } else {
-            for (uint32_t i = 0; i < filehandle->num_frames; i++) {
-                filehandle->offset_table[i] = i *
-                                              filehandle->desc.rows *
-                                              filehandle->desc.columns *
-                                              filehandle->desc.samples_per_pixel;
-            }
-
-            // Header of Pixel Data Element
-            filehandle->first_frame_offset = 12;
         }
     } else {
         // always position at pixel_data
@@ -1446,7 +1553,7 @@ static bool print_pixeldata_create(DcmError **error,
 
     uint32_t n = MIN(16, length);
     for (uint32_t i = 0; i < n; i++) {
-        printf("%02x", value[i]);
+        printf("%02x", value[i] & 0xff);
 
         if (i % size == size - 1) {
             printf(" ");

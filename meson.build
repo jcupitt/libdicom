@@ -5,10 +5,12 @@ project(
     # turn off asserts etc. in release mode
     'b_ndebug=if-release',
     'warning_level=2',
+    # do a release (optimised) build by default
+    'buildtype=debugoptimized',
   ],
   license : 'MIT',
   meson_version : '>=0.50',
-  version : '1.0.2'
+  version : '1.1.0'
 )
 if not meson.is_subproject()
   meson.add_dist_script(
@@ -34,7 +36,7 @@ endif
 #   2. Backward-compatible ABI change: bump minor, reset patch
 #   3. Other, eg. bugfix: bump patch
 abi_version_major = 1
-abi_version_minor = 0
+abi_version_minor = 1
 abi_version_patch = 0
 
 abi_version = '@0@.@1@.@2@'.format(
@@ -105,8 +107,6 @@ endif
 if cc.has_header('unistd.h')
     cfg.set('HAVE_UNISTD_H', '1')
 endif
-# we use a constructor attr for dcm_init()
-cfg.set('HAS_CONSTRUCTOR', cc.has_function_attribute('constructor'))
 
 configure_file(
   output : 'config.h',
@@ -141,12 +141,26 @@ install_headers(
 # src
 library_includes = include_directories('include')
 library_options = ['-DBUILDING_LIBDICOM']
+dict_build = executable(
+  'dicom-dict-build',
+  ['src/dicom-dict-build.c', 'src/dicom-dict-tables.c'],
+  dependencies : [uthash],
+  include_directories : library_includes,
+  native : true,
+)
+dict_lookup = custom_target(
+  'dicom-dict-lookup',
+  command : [dict_build, '@OUTPUT@'],
+  output : ['dicom-dict-lookup.c', 'dicom-dict-lookup.h'],
+)
 library_sources = [
+  dict_lookup,
   'src/getopt.c',
   'src/dicom.c',
   'src/dicom-io.c',
   'src/dicom-data.c',
   'src/dicom-dict.c',
+  'src/dicom-dict-tables.c',
   'src/dicom-file.c',
   'src/dicom-parse.c',
 ]
