@@ -24,7 +24,7 @@ to add support](https://github.com/ImagingDataCommons/libdicom/issues).
 ## Building from source
 
 ```shell
-cd libdicom-1.0.0
+cd libdicom-1.1.0
 meson setup builddir --buildtype release
 meson compile -C builddir
 meson install -C builddir
